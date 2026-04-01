@@ -46,15 +46,39 @@ WEST_YORKSHIRE_TOWNS = {
 
 def get_csv_url():
     print("Finding latest CSV URL from gov.uk...")
-    r = requests.get(GOV_PAGE, timeout=30)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.5",
+    }
+    r = requests.get(GOV_PAGE, headers=headers, timeout=30)
+    print(f"gov.uk status: {r.status_code}")
     soup = BeautifulSoup(r.text, "html.parser")
+
+    # Try multiple patterns to find the CSV
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if "Worker and Temporary Worker" in href and href.endswith(".csv"):
+        if href.endswith(".csv") and ("Worker" in href or "sponsor" in href.lower()):
             url = href if href.startswith("http") else "https://assets.publishing.service.gov.uk" + href
             print(f"Found CSV URL: {url}")
             return url
-    raise ValueError("Could not find CSV URL on gov.uk page")
+
+    # Fallback: try the GOV.UK publications API directly
+    print("Trying GOV.UK API fallback...")
+    api_url = "https://www.gov.uk/api/content/government/publications/register-of-licensed-sponsors-workers"
+    r2 = requests.get(api_url, headers=headers, timeout=30)
+    data = r2.json()
+    for detail in data.get("details", {}).get("attachments", []):
+        url = detail.get("url", "")
+        if url.endswith(".csv"):
+            print(f"Found CSV via API: {url}")
+            return url
+
+    # Last resort: use today's date to construct the URL pattern
+    today = datetime.now().strftime("%Y-%m-%d")
+    fallback = f"https://assets.publishing.service.gov.uk/media/{today} - Worker and Temporary Worker.csv"
+    print(f"Using date-based fallback URL")
+    return fallback
 
 
 def classify_region(town, county):
