@@ -1,0 +1,14 @@
+name: Daily Sponsor Update
+
+on:
+  schedule:
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Netlify rebuild
+        run: |
+          curl -X POST -d '{}' https://api.netlify.com/build_hooks/69cd7c140fe066ec3118042e
