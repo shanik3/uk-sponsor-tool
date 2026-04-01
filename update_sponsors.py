@@ -1,245 +1,217 @@
-import requests
-import csv
+#!/usr/bin/env python3
+"""
+UK Sponsor Finder Tool - Daily Auto-Update Script
+GitHub repo: shanik3/uk-sponsor-tool
+Netlify site: uk-sponser-finder-tool.netlify.app
+"""
+
 import json
-import re
+import csv
 import io
-import os
+import requests
 from datetime import datetime
+from collections import defaultdict
+from bs4 import BeautifulSoup
 
-# ── CONFIG ──────────────────────────────────────────────────────────────────
-GOV_PAGE = "https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers"
 NETLIFY_HOOK = "https://api.netlify.com/build_hooks/69cd7c140fe066ec3118042e"
+GOV_PAGE     = "https://www.gov.uk/government/publications/register-of-licensed-sponsors-workers"
+HTML_FILE    = "index.html"
 
-ROUTE_MAP = {
-    "Skilled Worker": "SW",
-    "Global Business Mobility": "GBM",
-    "Creative Worker": "CW",
-    "Charity Worker": "CHW",
-    "Scale-up": "SU",
-    "Senior or Specialist Worker": "GBM",
-    "Graduate Trainee": "GBM",
-    "UK Expansion Worker": "GBM",
-    "Service Supplier": "GBM",
-    "Secondment Worker": "GBM",
-    "Intra-Company Routes": "GBM",
+ROUTES = ["SW", "GBM", "CW", "CHW", "SU", "OTH"]
+
+LONDON_BOROUGHS = {
+    "London","City of London","Westminster","Camden","Islington","Hackney",
+    "Tower Hamlets","Greenwich","Lewisham","Southwark","Lambeth","Wandsworth",
+    "Hammersmith and Fulham","Fulham","Hammersmith","Ealing","Hounslow",
+    "Richmond","Kingston","Merton","Sutton","Croydon","Bromley","Bexley",
+    "Havering","Barking and Dagenham","Redbridge","Newham","Waltham Forest",
+    "Haringey","Enfield","Barnet","Harrow","Hillingdon","Brent",
 }
 
-SECTOR_MAP = {
-    "Health & Care": "H",
-    "Social Care": "SC",
-    "Education": "E",
-    "IT & Telecoms": "T",
-    "Hospitality & Catering": "F",
-    "Retail": "R",
-    "Construction & Infrastructure": "C",
-    "Transport & Logistics": "TR",
-    "Finance": "FL",
-    "Legal": "FL",
-    "Engineering": "EN",
+MANCHESTER_TOWNS = {
+    "Manchester","Salford","Bolton","Oldham","Rochdale","Wigan","Stockport",
+    "Trafford","Tameside","Bury","Altrincham","Sale","Cheadle","Stretford",
+    "Eccles","Swinton","Leigh","Ashton-under-Lyne","Hyde","Stalybridge",
+    "Middleton","Heywood","Radcliffe","Farnworth",
 }
 
-REGIONS = {
-    "London": ["London","Ilford","Harrow","Croydon","Hounslow","Hayes","Wembley",
-               "Uxbridge","Barking","Dagenham","Sutton","Richmond","Hammersmith",
-               "Twickenham","Bromley","Feltham","Stanmore","Wimbledon","Enfield",
-               "Barnet","Edgware","Greenford","Southall","Ealing","Brentford",
-               "Kingston","Romford","Lewisham","Hackney","Islington","Camden",
-               "Westminster","Lambeth","Wandsworth","Stratford","Bow","Shoreditch"],
-    "Manchester": ["Manchester","Bolton","Oldham","Stockport","Rochdale","Salford",
-                   "Altrincham","Bury","Wigan","Cheadle","Sale","Ashton-Under-Lyne",
-                   "Leigh","Heywood","Middleton","Farnworth","Hyde","Stalybridge"],
-    "West Yorkshire": ["Leeds","Bradford","Huddersfield","Wakefield","Dewsbury",
-                       "Halifax","Keighley","Batley","Shipley","Pontefract",
-                       "Castleford","Wetherby","Normanton","Cleckheaton","Mirfield"],
+WEST_YORKSHIRE_TOWNS = {
+    "Leeds","Bradford","Huddersfield","Wakefield","Halifax","Dewsbury",
+    "Keighley","Batley","Morley","Pudsey","Castleford","Pontefract",
+    "Normanton","Wetherby","Otley","Ilkley","Shipley","Bingley",
+    "Sowerby Bridge","Brighouse","Cleckheaton","Mirfield","Ossett",
+    "Horsforth","Garforth","Rothwell",
 }
 
-def get_region(town):
-    t = town.strip().upper()
-    for region, towns in REGIONS.items():
-        for rt in towns:
-            if rt.upper() in t or t in rt.upper():
-                return region
-    return "Other"
 
-def get_sector(industry):
-    if not industry:
-        return "O"
-    for k, v in SECTOR_MAP.items():
-        if k.lower() in industry.lower():
-            return v
-    return "O"
-
-def get_route_key(route):
-    if not route:
-        return "OTH"
-    for k, v in ROUTE_MAP.items():
-        if k.lower() in route.lower():
-            return v
-    return "OTH"
-
-def find_csv_url():
-    """Scrape the gov.uk page to find the latest CSV download URL automatically."""
+def get_csv_url():
     print("Finding latest CSV URL from gov.uk...")
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; SponsorTool/1.0)"}
-    r = requests.get(GOV_PAGE, headers=headers, timeout=30)
-    r.raise_for_status()
-    
-    # Look for Worker and Temporary Worker CSV links
-    patterns = [
-        r'href="(https://assets\.publishing\.service\.gov\.uk[^"]*Worker[^"]*\.csv)"',
-        r'href="(https://assets\.publishing\.service\.gov\.uk[^"]*worker[^"]*\.csv)"',
-        r'href="(/media/[^"]*Worker[^"]*\.csv)"',
-        r'href="(/media/[^"]*worker[^"]*\.csv)"',
-    ]
-    
-    for pattern in patterns:
-        matches = re.findall(pattern, r.text, re.IGNORECASE)
-        if matches:
-            url = matches[0]
-            if url.startswith('/'):
-                url = 'https://assets.publishing.service.gov.uk' + url
+    r = requests.get(GOV_PAGE, timeout=30)
+    soup = BeautifulSoup(r.text, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if "Worker and Temporary Worker" in href and href.endswith(".csv"):
+            url = href if href.startswith("http") else "https://assets.publishing.service.gov.uk" + href
             print(f"Found CSV URL: {url}")
             return url
-    
-    raise Exception("Could not find CSV URL on gov.uk page")
+    raise ValueError("Could not find CSV URL on gov.uk page")
 
-def download_csv(url):
-    print(f"Downloading CSV...")
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; SponsorTool/1.0)"}
-    r = requests.get(url, headers=headers, timeout=120)
-    r.raise_for_status()
-    print(f"Downloaded {len(r.content):,} bytes")
-    return r.content
 
-def parse_csv(content):
-    print("Parsing CSV...")
-    for enc in ['latin-1', 'utf-8', 'cp1252']:
-        try:
-            text = content.decode(enc)
-            break
-        except:
-            continue
-    reader = csv.DictReader(io.StringIO(text))
-    rows = list(reader)
-    print(f"Total rows: {len(rows):,}")
-    return rows
+def classify_region(town, county):
+    t = (town or "").strip().title()
+    c = (county or "").strip().title()
+    if any(x in t or x in c for x in ["London", "Greater London", "Middlesex"]):
+        return "London"
+    if t in LONDON_BOROUGHS or c in LONDON_BOROUGHS:
+        return "London"
+    if any(x in t or x in c for x in ["Manchester", "Lancashire", "Salford"]):
+        return "Manchester"
+    if t in MANCHESTER_TOWNS:
+        return "Manchester"
+    if "West Yorkshire" in c or "West Yorkshire" in t:
+        return "West Yorkshire"
+    if t in WEST_YORKSHIRE_TOWNS:
+        return "West Yorkshire"
+    return "Other"
 
-def build_data(rows):
-    print("Building data structure...")
-    data = {}
+
+def build_data_structure(rows):
+    raw = {r: defaultdict(lambda: defaultdict(lambda: {"c": 0, "s": []})) for r in ROUTES}
+
     for row in rows:
-        org = row.get('Organisation Name', row.get('Organisation name', ''))
-        town = row.get('Town/City', row.get('Town', ''))
-        county = row.get('County', '')
-        route = row.get('Route', '')
-        industry = row.get('Industry', row.get('Type & Rating', ''))
-        if not org:
-            continue
-        rk = get_route_key(route)
-        region = get_region(town)
-        t = town.strip().title() if town else "Unknown"
-        sec = get_sector(industry)
-        if rk not in data:
-            data[rk] = {}
-        if region not in data[rk]:
-            data[rk][region] = {}
-        if t not in data[rk][region]:
-            data[rk][region][t] = []
-        data[rk][region][t].append([org.strip(), county.strip() if county else "", sec])
-    return data
+        org      = (row.get("Organisation Name") or "").strip()
+        town     = (row.get("Town/City") or "").strip()
+        county   = (row.get("County") or "").strip()
+        route_raw = (row.get("Route") or "").strip().lower()
+        sub_tier  = (row.get("Sub Tier") or "").strip()
 
-def format_for_html(data):
-    result = {}
-    totals = {}
-    for rk, regions in data.items():
-        result[rk] = {}
-        totals[rk] = {"total": 0, "regions": {}}
-        for region, towns in regions.items():
-            town_list = []
-            region_count = 0
-            for town, sponsors in sorted(towns.items(), key=lambda x: len(x[1]), reverse=True):
-                if not sponsors:
-                    continue
-                town_list.append({
-                    "n": town,
-                    "c": len(sponsors),
-                    "s": sorted(sponsors, key=lambda x: x[0])[:300]
-                })
-                region_count += len(sponsors)
-            if town_list:
-                result[rk][region] = town_list
-                totals[rk]["regions"][region] = region_count
-                totals[rk]["total"] += region_count
-    return result, totals
+        rl = route_raw
+        if "skilled worker" in rl:
+            rk = "SW"
+        elif "global business mobility" in rl or "gbm" in rl:
+            rk = "GBM"
+        elif "creative worker" in rl:
+            rk = "CW"
+        elif "charity worker" in rl or "religious worker" in rl:
+            rk = "CHW"
+        elif "scale-up" in rl or "scale up" in rl:
+            rk = "SU"
+        else:
+            rk = "OTH"
 
-def update_html(formatted_data, formatted_totals):
+        region   = classify_region(town, county)
+        town_key = town.upper() if town else "UNKNOWN"
+        code     = sub_tier[:2].upper() if sub_tier else "O"
+
+        raw[rk][region][town_key]["c"] += 1
+        raw[rk][region][town_key]["s"].append([org, county, code])
+
+    out_data   = {}
+    out_totals = {}
+
+    for rk in ROUTES:
+        out_data[rk] = {}
+        route_total  = 0
+        region_totals = {"London": 0, "Manchester": 0, "West Yorkshire": 0, "Other": 0}
+
+        for region in ["London", "Manchester", "West Yorkshire", "Other"]:
+            towns = raw[rk].get(region, {})
+            town_list = sorted(
+                [{"n": tn, "c": info["c"], "s": info["s"]} for tn, info in towns.items()],
+                key=lambda x: x["c"], reverse=True
+            )
+            out_data[rk][region] = town_list
+            region_count = sum(t["c"] for t in town_list)
+            region_totals[region] = region_count
+            route_total += region_count
+
+        out_totals[rk] = {"total": route_total, "regions": region_totals}
+
+    return out_data, out_totals
+
+
+def update_html(data, totals, total_sponsors):
     print("Updating HTML file...")
-    if not os.path.exists("index.html"):
-        print("ERROR: index.html not found!")
-        return False
-    with open("index.html", "r", encoding="utf-8") as f:
-        html = f.read()
-    
-    new_json = json.dumps({"data": formatted_data}, separators=(',', ':'))
-    
-    start = html.find('const A=')
-    if start == -1:
-        print("Could not find const A= in HTML")
-        return False
-    depth = 0
-    i = start + len('const A=')
-    end = i
-    while i < len(html):
-        if html[i] == '{':
-            depth += 1
-        elif html[i] == '}':
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                break
-        i += 1
-    
-    html = html[:start] + f'const A={new_json}' + html[end:]
-    
-    total = sum(v["total"] for v in formatted_totals.values())
-    html = re.sub(r'[\d,]+ licensed sponsors', f'{total:,} licensed sponsors', html)
-    
-    today = datetime.now().strftime("%d %b %Y")
-    html = re.sub(r'Updated[\s\w]+\d{4}|Updated daily', f'Updated {today}', html)
-    
-    with open("index.html", "w", encoding="utf-8") as f:
-        f.write(html)
-    print(f"HTML updated. Total sponsors: {total:,}")
-    return True
+    with open(HTML_FILE, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # ── SAFE REPLACEMENT using string split, NOT regex ──────────────────────
+    # The JS has exactly:   const A={...huge JSON...};
+    # followed on the next line by:   const D=A.data,TT=A.totals;
+    #
+    # Strategy: find "const A=" then find the matching closing by scanning forward
+    # to the next occurrence of "\nconst " after the opening brace.
+    # Even safer: split on the known marker that comes RIGHT AFTER const A=...;
+    MARKER_BEFORE = "const A="
+    MARKER_AFTER  = ";\nconst D=A.data"   # the exact line that follows in the original
+
+    # Build replacement
+    A_obj = {"data": data, "totals": totals}
+    new_json = json.dumps(A_obj, ensure_ascii=False, separators=(",", ":"))
+    new_block = f"const A={new_json}"
+
+    idx_before = content.find(MARKER_BEFORE)
+    idx_after  = content.find(MARKER_AFTER)
+
+    if idx_before == -1 or idx_after == -1:
+        print("WARNING: Could not find exact markers. Trying fallback...")
+        # Fallback: find const A= ... const D=
+        FALLBACK_AFTER = "const D=A.data"
+        idx_before = content.find("const A=")
+        idx_after  = content.find(FALLBACK_AFTER)
+        if idx_before == -1 or idx_after == -1:
+            raise ValueError("Could not locate const A= block in HTML. Aborting.")
+        # idx_after points to "const D=" — go back to find the ; before it
+        # Walk backwards from idx_after to find \n
+        nl = content.rfind("\n", 0, idx_after)
+        content = content[:idx_before] + new_block + content[nl:]
+    else:
+        # Replace from "const A=" up to (but not including) ";\nconst D=A.data"
+        content = content[:idx_before] + new_block + content[idx_after:]
+
+    # Update the visible sponsor count text in the page
+    import re
+    date_str = datetime.now().strftime("%d %b %Y")
+    content = re.sub(r"\d[\d,]+ licensed sponsors", f"{total_sponsors:,} licensed sponsors", content)
+    content = re.sub(r"Updated \d{2} \w+ \d{4}", f"Updated {datetime.now().strftime('%d %b %Y')}", content)
+
+    with open(HTML_FILE, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    print(f"HTML updated. Total sponsors: {total_sponsors:,}")
+
 
 def trigger_netlify():
     print("Triggering Netlify rebuild...")
-    try:
-        r = requests.post(NETLIFY_HOOK, json={}, timeout=15)
-        print(f"Netlify status: {r.status_code}")
-    except Exception as e:
-        print(f"Netlify trigger failed: {e}")
+    r = requests.post(NETLIFY_HOOK, timeout=30)
+    print(f"Netlify status: {r.status_code}")
+
 
 def main():
-    print(f"\n{'='*50}")
-    print(f"UK Sponsor Tool Update — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"{'='*50}\n")
-    try:
-        url = find_csv_url()
-        content = download_csv(url)
-        rows = parse_csv(content)
-        data = build_data(rows)
-        formatted_data, formatted_totals = format_for_html(data)
-        success = update_html(formatted_data, formatted_totals)
-        if success:
-            trigger_netlify()
-            print("\n✅ Update complete!")
-        else:
-            print("\n❌ HTML update failed")
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print("=" * 50)
+    print(f"UK Sponsor Finder Tool Update – {now}")
+    print("=" * 50)
+
+    csv_url = get_csv_url()
+
+    print("Downloading CSV...")
+    r = requests.get(csv_url, timeout=120)
+    print(f"Downloaded {len(r.content):,} bytes")
+
+    print("Parsing CSV...")
+    text = r.content.decode("latin-1")
+    reader = csv.DictReader(io.StringIO(text))
+    rows = list(reader)
+    print(f"Total rows: {len(rows):,}")
+
+    print("Building data structure...")
+    data, totals = build_data_structure(rows)
+
+    total_sponsors = sum(t["total"] for t in totals.values())
+    update_html(data, totals, total_sponsors)
+    trigger_netlify()
+
 
 if __name__ == "__main__":
     main()
