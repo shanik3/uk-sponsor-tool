@@ -10,8 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pages: write
-      id-token: write
 
     steps:
       - name: Checkout repo
@@ -28,7 +26,7 @@ jobs:
       - name: Run update script
         run: python update_sponsors.py
 
-      - name: Commit and push updated HTML
+      - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
